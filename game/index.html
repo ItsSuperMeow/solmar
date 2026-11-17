@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SOLMAR — Open-World Crime Game</title>
+<link rel="stylesheet" href="css/style.css">
+<script>window.SOL = window.SOL || {};</script>
+<script src="vendor/three.min.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/save.js"></script>
+<script src="js/city.js"></script>
+<script src="js/player.js"></script>
+<script src="js/vehicles.js"></script>
+<script src="js/pedestrians.js"></script>
+<script src="js/police.js"></script>
+<script src="js/combat.js"></script>
+<script src="js/missions.js"></script>
+<script src="js/hud.js"></script>
+<script src="js/main.js"></script>
+</head>
+<body>
+<div id="game"></div>
+
+<!-- In-game HUD -->
+<div id="hud" class="hidden">
+  <div id="topleft">
+    <div id="health-wrap"><div id="health-bar"></div><span id="health-text">100</span></div>
+    <div id="money">$<span id="money-text">0</span></div>
+    <div id="stars"></div>
+  </div>
+  <div id="objective" class="hidden"><span id="objective-title">MISSION</span><span id="objective-text"></span></div>
+  <div id="minimap-wrap"><canvas id="minimap" width="200" height="200"></canvas><span id="minimap-label">SOLMAR</span></div>
+  <div id="speedo" class="hidden"><span id="speed-text">0</span><span class="unit">km/h</span><span id="car-name"></span></div>
+  <div id="ammo" class="hidden"><span id="ammo-text">12 / 12</span></div>
+  <div id="crosshair" class="hidden">+</div>
+  <div id="hint"></div>
+  <div id="toast"></div>
+  <div id="damage"></div>
+</div>
+
+<!-- Start screen -->
+<div id="menu">
+  <div class="menu-inner">
+    <h1>SOLMAR</h1>
+    <p class="tagline">A sun-soaked city. A stolen car. A crew that never forgets.</p>
+    <p class="story">Rio came to Solmar with nothing but a driver's licence and a debt.
+      Mara and the Solmar crew gave him a wheel, a gun and a way out — five jobs,
+      one last score, and a city that watches everything you do.</p>
+    <div class="controls">
+      <div><b>W A S D</b> move / drive</div>
+      <div><b>Mouse</b> look around</div>
+      <div><b>Shift</b> run &nbsp; <b>Space</b> jump / handbrake</div>
+      <div><b>E</b> steal / exit car &nbsp; <b>F</b> punch</div>
+      <div><b>Click</b> shoot &nbsp; <b>R</b> reload &nbsp; <b>P</b> pause</div>
+    </div>
+    <button id="start-btn">CLICK TO START</button>
+    <button id="continue-btn" class="hidden">CONTINUE — $<span id="continue-money">0</span>, <span id="continue-missions">0</span>/5 jobs done</button>
+    <p class="fine">An original game. No real city, no real gang, nothing borrowed from any commercial game.</p>
+  </div>
+</div>
+
+<!-- Busted / wasted -->
+<div id="busted" class="end-screen hidden">
+  <h1>BUSTED</h1>
+  <p>The Solmar police caught up with you. Mara paid your bail — it cost you $200.</p>
+  <button id="busted-btn">BACK TO THE STREETS</button>
+</div>
+<div id="wasted" class="end-screen hidden">
+  <h1>WASTED</h1>
+  <p>You blacked out on a Solmar sidewalk. The crew dragged you to the clinic.</p>
+  <button id="wasted-btn">GET UP</button>
+</div>
+<div id="paused" class="end-screen hidden">
+  <h1>PAUSED</h1>
+  <p>Press P to keep playing.</p>
+</div>
+</body>
+</html>
