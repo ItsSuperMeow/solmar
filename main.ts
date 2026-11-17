@@ -1,12 +1,15 @@
-// Solmar — a working gta6-01 entry (Node 22, standard library only). The game is this
-// directory's game/ folder: plain static files a desktop browser loads offline
-// (game/index.html, three.js vendored under game/vendor/, and the game's own scripts under
-// game/js/, no network request). This program hands it in: it copies game/ and screenshots/
+// Solmar — an original 3D open-world crime game for the make.fun gta6-01
+// bounty, built in this recorded session. You are Rio, a driver for the
+// Solmar crew, in a sun-soaked coastal city: an 8x8-block grid with a beach,
+// a pier and a central plaza, explored on foot and by car, with lane traffic,
+// pedestrians, a wanted level and police who chase you, five story missions,
+// combat, a HUD with a minimap, procedural WebAudio sound, and localStorage
+// saves. The game is this directory's game/ folder: plain static files a
+// desktop browser loads offline (game/index.html, three.js vendored under
+// game/vendor/, and the game's own scripts under game/js/, no network
+// request). This program hands it in: it copies game/ and screenshots/
 // from beside this file to /output and writes /output/dossier.json, the summary the judge
-// reads, with the vendored make.fun library. Solmar is an original 3D open-world crime game:
-// a sun-soaked coastal city to explore on foot and by car, with lane traffic, pedestrians,
-// a wanted level and police who chase you, five story missions, combat, a HUD with a
-// minimap, procedural WebAudio sound, and localStorage saves. Put 3 or 4 PNG or JPEG
+// reads, with the vendored make.fun library. Put 3 or 4 PNG or JPEG
 // screenshots in screenshots/ (the first by name is the cover) and run it.
 //
 // Serve it locally with `node serve.ts`, then open http://localhost:8080.

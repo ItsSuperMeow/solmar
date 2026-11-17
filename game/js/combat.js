@@ -1,110 +1,100 @@
-/* Solmar combat: pistol shooting with raycast, muzzle flash and ammo. */
-(function () {
-  var SOL = window.SOL;
-  var THREE = window.THREE;
+// Solmar combat — the pistol. Click to shoot: a raycast from the camera
+// through the crosshair, a muzzle flash, a tracer line, ammo and reload.
+// Hitting a pedestrian or an officer is a crime, and it scares everyone
+// nearby. The pistol only fires on foot; you cannot shoot while driving.
 
-  var raycaster = null;
-  var flashLight = null;
-  var flashTimer = 0;
-  var tracer = null;
+function initCombat(G) {
+  G.combat = { ammo: 12, magSize: 12, reloading: false, reloadTimer: 0, cooldown: 0, flashTimer: 0 };
+  // Muzzle flash: a small point light that lives one frame.
+  const flash = new THREE.PointLight(0xffc860, 0, 14);
+  G.scene.add(flash);
+  G.combat.flashLight = flash;
+  // Tracer: a thin line from the muzzle to the hit point, shown briefly.
+  const tracerGeo = new THREE.BufferGeometry();
+  tracerGeo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
+  const tracer = new THREE.Line(tracerGeo, new THREE.LineBasicMaterial({ color: 0xffe9a8, transparent: true, opacity: 0.9 }));
+  tracer.visible = false;
+  G.scene.add(tracer);
+  G.combat.tracer = tracer;
+  G.combat.tracerTimer = 0;
+  G.combat.raycaster = new THREE.Raycaster();
+}
 
-  SOL.Combat = {
-    init: function (game) {
-      raycaster = new THREE.Raycaster();
-      raycaster.far = 80;
-      flashLight = new THREE.PointLight(0xffc46b, 0, 18);
-      game.scene.add(flashLight);
-      // Tracer line shown briefly after each shot
-      var geo = new THREE.BufferGeometry();
-      geo.setAttribute('position', new THREE.BufferAttribute(new Float32Array(6), 3));
-      tracer = new THREE.Line(geo, new THREE.LineBasicMaterial({ color: 0xffe9a8, transparent: true, opacity: 0 }));
-      game.scene.add(tracer);
-      game.ammo = 12;
-      game.ammoReserve = 48;
-      game.reloadTimer = 0;
-    },
-    shoot: function (game) {
-      if (game.state !== 'playing' || game.driving || game.reloadTimer > 0) return;
-      if (game.ammo <= 0) { this.reload(game); return; }
-      game.ammo -= 1;
-      SOL.Audio.gunshot();
-      SOL.Police.addWanted(game, 0); // shooting itself is a crime, handled below
-      game.wanted = Math.min(5, game.wanted + 1);
-      game.lastCrimeAt = game.time;
-      SOL.Audio.setSiren(game.wanted);
-      SOL.Pedestrians.scareNearby(game, game.player.pos.x, game.player.pos.z, 40);
-      // Raycast from the camera through the screen centre
-      var dir = new THREE.Vector3();
-      game.camera.getWorldDirection(dir);
-      raycaster.set(game.camera.position, dir);
-      var targets = [];
-      for (var i = 0; i < game.peds.length; i++) if (!game.peds[i].down) targets.push(game.peds[i].mesh);
-      for (var j = 0; j < game.cops.length; j++) if (!game.cops[j].down) targets.push(game.cops[j].mesh);
-      var hits = raycaster.intersectObjects(targets, true);
-      var endPoint = game.camera.position.clone().add(dir.clone().multiplyScalar(60));
-      if (hits.length > 0) {
-        var hitObj = hits[0].object;
-        endPoint = hits[0].point.clone();
-        // Find whose mesh was hit
-        var all = game.peds.concat(game.cops);
-        for (var k = 0; k < all.length; k++) {
-          var t = all[k];
-          if (t.down) continue;
-          var found = false;
-          t.mesh.traverse(function (child) { if (child === hitObj) found = true; });
-          if (found) {
-            t.down = true;
-            t.downTimer = 8;
-            t.mesh.rotation.x = -Math.PI / 2;
-            t.mesh.position.y = 0.4;
-            if (t.isCop) {
-              SOL.Police.addWanted(game, 2);
-              SOL.HUD.toast(game, 'You shot a cop! +2 stars');
-            } else {
-              SOL.Police.addWanted(game, 1);
-              SOL.HUD.toast(game, 'You hit a pedestrian! +1 star');
-            }
-            break;
-          }
-        }
-      }
-      // Muzzle flash at the player's hand, tracer to the hit point
-      var p = game.player.pos;
-      var start = new THREE.Vector3(p.x, 1.6, p.z);
-      flashLight.position.copy(start);
-      flashLight.intensity = 3;
-      flashTimer = 0.06;
-      var posAttr = tracer.geometry.getAttribute('position');
-      posAttr.setXYZ(0, start.x, start.y, start.z);
-      posAttr.setXYZ(1, endPoint.x, endPoint.y, endPoint.z);
-      posAttr.needsUpdate = true;
-      tracer.material.opacity = 0.9;
-      // Recoil kick on the camera
-      game.camPitch += 0.02;
-    },
-    reload: function (game) {
-      if (game.reloadTimer > 0 || game.ammo === 12 || game.ammoReserve <= 0) return;
-      game.reloadTimer = 1.1;
-      SOL.HUD.setHint(game, 'Reloading…');
-    },
-    update: function (game, dt) {
-      if (flashTimer > 0) {
-        flashTimer -= dt;
-        if (flashTimer <= 0) flashLight.intensity = 0;
-      }
-      if (tracer && tracer.material.opacity > 0) {
-        tracer.material.opacity = Math.max(0, tracer.material.opacity - dt * 8);
-      }
-      if (game.reloadTimer > 0) {
-        game.reloadTimer -= dt;
-        if (game.reloadTimer <= 0) {
-          var need = 12 - game.ammo;
-          var take = Math.min(need, game.ammoReserve);
-          game.ammo += take;
-          game.ammoReserve -= take;
-          SOL.HUD.setHint(game, '');
-        }
-      }
+function shootPistol(G) {
+  const c = G.combat;
+  if (G.state !== 'playing' || G.player.car) return;
+  if (c.reloading || c.cooldown > 0 || c.ammo <= 0) {
+    if (c.ammo <= 0 && !c.reloading) startReload(G);
+    return;
+  }
+  c.cooldown = 0.28;
+  c.ammo -= 1;
+  c.flashTimer = 0.06;
+  playGunshot(G);
+  addWanted(G, 1, 'shots fired');
+  scarePeds(G, G.player.pos.x, G.player.pos.z, 30);
+  // Raycast from the camera through the centre of the screen.
+  const ray = c.raycaster;
+  ray.setFromCamera({ x: 0, y: 0 }, G.camera);
+  ray.far = 70;
+  const targets = [];
+  for (const ped of G.peds) if (!ped.fallen) targets.push(ped.mesh);
+  for (const cop of G.cops) if (!cop.down) targets.push(cop.mesh);
+  const hits = ray.intersectObjects(targets, true);
+  // Muzzle position: the tip of Rio's gun, in world space.
+  const muzzle = new THREE.Vector3();
+  G.player.parts.gun.getWorldPosition(muzzle);
+  let end;
+  if (hits.length > 0) {
+    end = hits[0].point.clone();
+    let hit = hits[0].object;
+    while (hit.parent && hit.parent !== G.scene) hit = hit.parent;
+    const ped = G.peds.find((p) => p.mesh === hit);
+    if (ped) { knockPedDown(G, ped, false); addWanted(G, 1, 'pedestrian shot'); }
+    const cop = G.cops.find((o) => o.mesh === hit);
+    if (cop) { copDown(G, cop, false); }
+  } else {
+    end = ray.ray.at(60, new THREE.Vector3());
+  }
+  // Show the tracer from muzzle to hit point.
+  const pos = c.tracer.geometry.attributes.position;
+  pos.setXYZ(0, muzzle.x, muzzle.y, muzzle.z);
+  pos.setXYZ(1, end.x, end.y, end.z);
+  pos.needsUpdate = true;
+  c.tracer.visible = true;
+  c.tracerTimer = 0.07;
+  c.flashLight.position.copy(muzzle);
+  c.flashLight.intensity = 2.5;
+  updateAmmoHud(G);
+}
+
+function startReload(G) {
+  const c = G.combat;
+  if (c.reloading || c.ammo === c.magSize) return;
+  c.reloading = true;
+  c.reloadTimer = 1.1;
+  showPrompt(G, 'Reloading…');
+}
+
+function updateCombat(G, dt) {
+  const c = G.combat;
+  if (!c) return;
+  c.cooldown = Math.max(0, c.cooldown - dt);
+  if (c.reloading) {
+    c.reloadTimer -= dt;
+    if (c.reloadTimer <= 0) {
+      c.reloading = false;
+      c.ammo = c.magSize;
+      updateAmmoHud(G);
+      showPrompt(G, '');
     }
-  };
-})();
+  }
+  if (c.flashTimer > 0) {
+    c.flashTimer -= dt;
+    if (c.flashTimer <= 0) c.flashLight.intensity = 0;
+  }
+  if (c.tracerTimer > 0) {
+    c.tracerTimer -= dt;
+    if (c.tracerTimer <= 0) c.tracer.visible = false;
+  }
+}

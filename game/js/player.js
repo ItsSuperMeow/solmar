@@ -1,170 +1,155 @@
-/* Solmar player: Rio, on foot. WASD move, Shift run, Space jump, F punch. */
-(function () {
-  var SOL = window.SOL;
-  var THREE = window.THREE;
+// Solmar player — Rio on foot. WASD moves relative to the camera, Shift
+// runs, Space jumps, F punches. A simple box-built character whose limbs
+// swing while he walks. Collides with buildings as a circle against their
+// axis-aligned boxes, and stays inside the city and the beach.
 
-  function buildPlayerMesh() {
-    var g = new THREE.Group();
-    var skin = new THREE.MeshLambertMaterial({ color: 0xc98d5f });
-    var shirt = new THREE.MeshLambertMaterial({ color: 0x2e6f9e });
-    var pants = new THREE.MeshLambertMaterial({ color: 0x2c2f36 });
-    var body = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.1, 0.5), shirt);
-    body.position.y = 1.25; body.castShadow = true;
-    g.add(body);
-    var head = new THREE.Mesh(new THREE.SphereGeometry(0.34, 12, 10), skin);
-    head.position.y = 2.1; head.castShadow = true;
-    g.add(head);
-    var cap = new THREE.Mesh(new THREE.CylinderGeometry(0.36, 0.38, 0.16, 12),
-      new THREE.MeshLambertMaterial({ color: 0xffd23c }));
-    cap.position.y = 2.34;
-    g.add(cap);
-    var legL = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.8, 0.36), pants);
-    legL.position.set(-0.22, 0.4, 0); g.add(legL);
-    var legR = legL.clone(); legR.position.x = 0.22; g.add(legR);
-    var armL = new THREE.Mesh(new THREE.BoxGeometry(0.26, 0.9, 0.3), shirt);
-    armL.position.set(-0.6, 1.3, 0); g.add(armL);
-    var armR = armL.clone(); armR.position.x = 0.6; g.add(armR);
-    g.userData.legL = legL; g.userData.legR = legR;
-    g.userData.armL = armL; g.userData.armR = armR;
-    return g;
-  }
+function createPlayer(G) {
+  const skin = new THREE.MeshLambertMaterial({ color: 0xc98d5f });
+  const shirt = new THREE.MeshLambertMaterial({ color: 0x1f8a70 });
+  const pants = new THREE.MeshLambertMaterial({ color: 0x2e3a4a });
+  const cap = new THREE.MeshLambertMaterial({ color: 0xffd23c });
+  const group = new THREE.Group();
+  const legL = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.8, 0.34), pants);
+  legL.position.set(-0.22, 0.4, 0);
+  const legR = legL.clone();
+  legR.position.x = 0.22;
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.95, 0.85, 0.5), shirt);
+  torso.position.y = 1.25;
+  const armL = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.75, 0.28), shirt);
+  armL.position.set(-0.62, 1.25, 0);
+  const armR = armL.clone();
+  armR.position.x = 0.62;
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), skin);
+  head.position.y = 1.95;
+  const hat = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.16, 0.56), cap);
+  hat.position.y = 2.24;
+  // A small pistol in his right hand, visible whenever he is armed.
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.16, 0.42), new THREE.MeshLambertMaterial({ color: 0x222222 }));
+  gun.position.set(0.62, 0.85, 0.25);
+  group.add(legL, legR, torso, armL, armR, head, hat, gun);
+  group.position.copy(G.player.pos);
+  G.scene.add(group);
+  G.player.mesh = group;
+  G.player.parts = { legL, legR, armL, armR, gun };
+  G.player.yaw = Math.PI;
+  G.player.vy = 0;
+  G.player.onGround = true;
+  G.player.punchTimer = 0;
+  G.player.walkPhase = 0;
+}
 
-  SOL.Player = {
-    create: function (game, x, z) {
-      var mesh = buildPlayerMesh();
-      mesh.position.set(x, 0, z);
-      game.scene.add(mesh);
-      return {
-        mesh: mesh,
-        pos: mesh.position,
-        vel: new THREE.Vector3(),
-        yaw: Math.PI,           // facing direction
-        onGround: true,
-        health: 100,
-        walkPhase: 0,
-        speed: 0,
-        punchCooldown: 0,
-        punchAnim: 0
-      };
-    },
-    // Circle vs building AABBs: push the player out of any overlap.
-    collide: function (game, pos, radius) {
-      var cols = SOL.City.colliders;
-      for (var i = 0; i < cols.length; i++) {
-        var c = cols[i];
-        var nx = Math.max(c.x0, Math.min(pos.x, c.x1));
-        var nz = Math.max(c.z0, Math.min(pos.z, c.z1));
-        var dx = pos.x - nx, dz = pos.z - nz;
-        var d2 = dx * dx + dz * dz;
-        if (d2 < radius * radius) {
-          if (d2 < 0.0001) { pos.x = c.x1 + radius; continue; }
-          var d = Math.sqrt(d2);
-          pos.x = nx + dx / d * radius;
-          pos.z = nz + dz / d * radius;
-        }
-      }
-      // Stay inside the city (and out of the deep sea).
-      pos.x = Math.max(-214, Math.min(256, pos.x));
-      pos.z = Math.max(-214, Math.min(214, pos.z));
-    },
-    update: function (game, dt) {
-      var p = game.player;
-      if (!p || game.driving) return;
-      var keys = game.keys;
-      var camYaw = game.camYaw;
-      var fwd = { x: -Math.sin(camYaw), z: -Math.cos(camYaw) };
-      var right = { x: -fwd.z, z: fwd.x };
-      var mx = 0, mz = 0;
-      if (keys['KeyW']) { mx += fwd.x; mz += fwd.z; }
-      if (keys['KeyS']) { mx -= fwd.x; mz -= fwd.z; }
-      if (keys['KeyD']) { mx += right.x; mz += right.z; }
-      if (keys['KeyA']) { mx -= right.x; mz -= right.z; }
-      var moving = (mx !== 0 || mz !== 0);
-      var run = keys['ShiftLeft'] || keys['ShiftRight'];
-      var speed = run ? 11 : 6;
-      if (moving) {
-        var len = Math.hypot(mx, mz);
-        mx /= len; mz /= len;
-        p.vel.x = mx * speed; p.vel.z = mz * speed;
-        p.yaw = Math.atan2(mx, mz);
-        p.walkPhase += dt * (run ? 14 : 9);
-        p.speed = speed;
+// Push a circle (x, z, radius) out of every building box it overlaps.
+function collideCircle(G, x, z, radius) {
+  for (const b of G.colliders) {
+    const cx = Math.max(b.minX, Math.min(x, b.maxX));
+    const cz = Math.max(b.minZ, Math.min(z, b.maxZ));
+    const dx = x - cx, dz = z - cz;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < radius * radius) {
+      if (d2 > 0.0001) {
+        const d = Math.sqrt(d2);
+        x = cx + (dx / d) * radius;
+        z = cz + (dz / d) * radius;
       } else {
-        p.vel.x *= Math.max(0, 1 - dt * 10);
-        p.vel.z *= Math.max(0, 1 - dt * 10);
-        p.speed = 0;
+        // Dead centre: push out along the smallest penetration axis.
+        const pushL = x - b.minX, pushR = b.maxX - x, pushB = z - b.minZ, pushT = b.maxZ - z;
+        const m = Math.min(pushL, pushR, pushB, pushT);
+        if (m === pushL) x = b.minX - radius;
+        else if (m === pushR) x = b.maxX + radius;
+        else if (m === pushB) z = b.minZ - radius;
+        else z = b.maxZ + radius;
       }
-      // Gravity and jumping
-      p.vel.y -= 30 * dt;
-      if (keys['Space'] && p.onGround) { p.vel.y = 10; p.onGround = false; }
-      p.pos.x += p.vel.x * dt;
-      p.pos.z += p.vel.z * dt;
-      p.pos.y += p.vel.y * dt;
-      if (p.pos.y <= 0) { p.pos.y = 0; p.vel.y = 0; p.onGround = true; }
-      this.collide(game, p.pos, 0.7);
-      // Animate: legs swing, arms swing, punch swings the right arm.
-      var mesh = p.mesh;
-      mesh.rotation.y = p.yaw;
-      var swing = moving ? Math.sin(p.walkPhase) * 0.55 : 0;
-      mesh.userData.legL.rotation.x = swing;
-      mesh.userData.legR.rotation.x = -swing;
-      mesh.userData.armL.rotation.x = -swing * 0.7;
-      if (p.punchAnim > 0) {
-        p.punchAnim -= dt;
-        mesh.userData.armR.rotation.x = -1.8 * Math.max(0, p.punchAnim / 0.25);
-      } else {
-        mesh.userData.armR.rotation.x = swing * 0.7;
-      }
-      if (p.punchCooldown > 0) p.punchCooldown -= dt;
-    },
-    // Punch: hits the nearest pedestrian or cop in front within 1.8 units.
-    punch: function (game) {
-      var p = game.player;
-      if (!p || p.punchCooldown > 0 || game.driving) return;
-      p.punchCooldown = 0.45;
-      p.punchAnim = 0.25;
-      SOL.Audio.punch();
-      var fx = Math.sin(p.yaw), fz = Math.cos(p.yaw);
-      var hit = null;
-      var targets = game.peds.concat(game.cops);
-      for (var i = 0; i < targets.length; i++) {
-        var t = targets[i];
-        if (t.down) continue;
-        var dx = t.pos.x - p.pos.x, dz = t.pos.z - p.pos.z;
-        var d = Math.hypot(dx, dz);
-        if (d < 2.0 && (dx * fx + dz * fz) / Math.max(d, 0.001) > 0.3) { hit = t; break; }
-      }
-      if (hit) {
-        hit.down = true;
-        hit.downTimer = 6;
-        hit.mesh.rotation.x = -Math.PI / 2;
-        hit.mesh.position.y = 0.4;
-        if (hit.isCop) {
-          SOL.Police.addWanted(game, 2);
-          SOL.HUD.toast(game, 'You knocked out a cop! +2 stars');
-        } else {
-          SOL.Police.addWanted(game, 1);
-          SOL.HUD.toast(game, 'You hit a pedestrian! +1 star');
-        }
-      }
-    },
-    damage: function (game, amount) {
-      var p = game.player;
-      if (!p || game.state !== 'playing') return;
-      p.health -= amount;
-      game.health = p.health;
-      SOL.HUD.flashDamage(game);
-      if (p.health <= 0) {
-        p.health = 0;
-        game.health = 0;
-        SOL.Main.wasted(game);
-      }
-    },
-    heal: function (game, amount) {
-      var p = game.player;
-      if (!p) return;
-      p.health = Math.min(100, p.health + amount);
-      game.health = p.health;
     }
-  };
-})();
+  }
+  return { x, z };
+}
+
+function clampToWorld(G, x, z, radius) {
+  // City streets run x -194..194; the beach runs to the sea at x 232.
+  x = Math.max(-194 + radius, Math.min(230 - radius, x));
+  z = Math.max(-194 + radius, Math.min(194 - radius, z));
+  return { x, z };
+}
+
+function updatePlayer(G, dt) {
+  const p = G.player;
+  if (p.car) return; // driving is handled by vehicles.js
+  const keys = G.keys;
+  const run = keys['ShiftLeft'] || keys['ShiftRight'];
+  const speed = run ? 10 : 6;
+  // Input axes: iz is forward (W +1, S -1), ix is right (D +1, A -1).
+  const iz = (keys['KeyW'] ? 1 : 0) - (keys['KeyS'] ? 1 : 0);
+  const ix = (keys['KeyD'] ? 1 : 0) - (keys['KeyA'] ? 1 : 0);
+  const moving = ix !== 0 || iz !== 0;
+  if (moving) {
+    // Forward is (sin yaw, cos yaw), right is (-cos yaw, sin yaw).
+    const cy = G.cameraYaw;
+    const sin = Math.sin(cy), cos = Math.cos(cy);
+    let mx = sin * iz - cos * ix;
+    let mz = cos * iz + sin * ix;
+    const len = Math.hypot(mx, mz);
+    mx /= len; mz /= len;
+    p.pos.x += mx * speed * dt;
+    p.pos.z += mz * speed * dt;
+    // Face where he walks.
+    p.yaw = Math.atan2(mx, mz);
+    p.walkPhase += dt * (run ? 13 : 9);
+  }
+  // Jump and gravity.
+  if (keys['Space'] && p.onGround) {
+    p.vy = 7.5;
+    p.onGround = false;
+  }
+  if (!p.onGround) {
+    p.vy -= 22 * dt;
+    p.pos.y += p.vy * dt;
+    if (p.pos.y <= 0) { p.pos.y = 0; p.vy = 0; p.onGround = true; }
+  }
+  // Building and world collision.
+  let r = collideCircle(G, p.pos.x, p.pos.z, 0.7);
+  r = clampToWorld(G, r.x, r.z, 0.7);
+  p.pos.x = r.x; p.pos.z = r.z;
+  // Pose the character.
+  const m = p.mesh;
+  m.position.set(p.pos.x, p.pos.y, p.pos.z);
+  m.rotation.y = p.yaw;
+  const swing = moving && p.onGround ? Math.sin(p.walkPhase) * 0.55 : 0;
+  p.parts.legL.rotation.x = swing;
+  p.parts.legR.rotation.x = -swing;
+  p.parts.armL.rotation.x = -swing * 0.8;
+  p.parts.armR.rotation.x = swing * 0.8;
+  if (p.punchTimer > 0) {
+    p.punchTimer -= dt;
+    p.parts.armR.rotation.x = -1.6 * Math.max(0, p.punchTimer / 0.25);
+  }
+}
+
+// A punch: a short swing that hurts the nearest pedestrian or officer.
+function playerPunch(G) {
+  const p = G.player;
+  if (p.car || p.punchTimer > 0) return;
+  p.punchTimer = 0.25;
+  playPunch(G);
+  const reach = 2.2;
+  const fx = Math.sin(p.yaw), fz = Math.cos(p.yaw);
+  let best = null, bestD = reach;
+  for (const ped of G.peds) {
+    if (ped.fallen) continue;
+    const dx = ped.pos.x - p.pos.x, dz = ped.pos.z - p.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d < bestD && dx * fx + dz * fz > 0) { best = ped; bestD = d; }
+  }
+  if (best) {
+    knockPedDown(G, best, true);
+    return;
+  }
+  for (const cop of G.cops) {
+    if (cop.down) continue;
+    const dx = cop.pos.x - p.pos.x, dz = cop.pos.z - p.pos.z;
+    const d = Math.hypot(dx, dz);
+    if (d < bestD && dx * fx + dz * fz > 0) { best = cop; bestD = d; }
+  }
+  if (best) {
+    copDown(G, best, true);
+  }
+}

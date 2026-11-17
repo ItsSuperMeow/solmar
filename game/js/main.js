@@ -1,329 +1,285 @@
-/* Solmar main: init, game loop, camera, input, states, screenshot staging. */
-(function () {
-  var SOL = window.SOL;
-  var THREE = window.THREE;
+// Solmar main — entry point, game loop, camera, input, start screen.
+// The shared game state G lives here; every other file is functions that
+// take G. The loop uses real delta time from the clock, never a fixed step,
+// so the game runs at the same speed on any display.
 
-  var game = null;
-  var renderer = null;
-  var frameCount = 0;
-  var lastSaveAt = 0;
-  var lastMouseMoveAt = 0;
-  var clock = new THREE.Clock();
+const G = {
+  seed: 7,
+  state: 'menu', // 'menu' | 'playing'
+  time: 0,
+  scene: null, camera: null, renderer: null,
+  keys: {},
+  cameraYaw: Math.PI, cameraPitch: 0.32,
+  cameraPos: null, // smoothed camera position
+  player: {
+    pos: null, mesh: null, parts: null, yaw: Math.PI,
+    health: 100, money: 0, car: null, vy: 0, onGround: true,
+    punchTimer: 0, walkPhase: 0, invulnTimer: 0,
+  },
+  cars: [], policeCars: [], cops: [], peds: [],
+  wanted: 0, lastCrimeAt: -100, wantedDecayTimer: 0,
+  missions: null, combat: null,
+  colliders: [], roads: null, cityStats: {},
+  audio: { ctx: null },
+  shot: null, saveTimer: 0,
+};
 
-  function buildRenderer() {
-    renderer = new THREE.WebGLRenderer({ antialias: true });
-    renderer.setSize(window.innerWidth, window.innerHeight);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 1.5));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
-    renderer.outputEncoding = THREE.sRGBEncoding;
-    document.getElementById('game').appendChild(renderer.domElement);
-    return renderer;
+function init() {
+  const params = new URLSearchParams(window.location.search);
+  G.shot = params.get('shot');
+  const seedParam = parseInt(params.get('seed') || '', 10);
+  if (Number.isFinite(seedParam)) G.seed = seedParam;
+  G.player.pos = new THREE.Vector3(10, 0, 26);
+
+  // Renderer and scene.
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.outputEncoding = THREE.sRGBEncoding;
+  document.getElementById('game-container').appendChild(renderer.domElement);
+  G.renderer = renderer;
+  G.scene = new THREE.Scene();
+  G.camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1200);
+  G.cameraPos = new THREE.Vector3(0, 60, 140);
+
+  buildCity(G);
+  createPlayer(G);
+  spawnParkedCars(G);
+  spawnTraffic(G, 10);
+  spawnPedestrians(G, 18);
+  initCombat(G);
+  initMissions(G);
+
+  // Restore a save, if one exists: the Continue button offers it.
+  const save = loadSave();
+  if (save) {
+    document.getElementById('continue-btn').classList.remove('hidden');
+    document.getElementById('continue-info').textContent =
+      '$' + (save.money || 0) + ' · ' + (save.missionsDone || 0) + '/5 jobs done';
   }
+  document.getElementById('start-btn').addEventListener('click', (e) => { e.target.blur(); startGame(G, false); });
+  document.getElementById('continue-btn').addEventListener('click', (e) => { e.target.blur(); startGame(G, true); });
 
-  function buildLights(scene) {
-    var hemi = new THREE.HemisphereLight(0xffd9a0, 0x5a4a3a, 0.75);
-    scene.add(hemi);
-    var sun = new THREE.DirectionalLight(0xffd9a0, 1.15);
-    sun.position.set(-180, 220, -120);
-    sun.castShadow = true;
-    sun.shadow.mapSize.set(1024, 1024);
-    sun.shadow.camera.left = -260; sun.shadow.camera.right = 260;
-    sun.shadow.camera.top = 260; sun.shadow.camera.bottom = -260;
-    sun.shadow.camera.near = 10; sun.shadow.camera.far = 700;
-    sun.shadow.bias = -0.0006;
-    scene.add(sun);
-    var amb = new THREE.AmbientLight(0x604a5a, 0.35);
-    scene.add(amb);
-  }
-
-  function newGameState() {
-    return {
-      state: 'menu',
-      scene: null, camera: null,
-      keys: {},
-      money: 0, health: 100, wanted: 0,
-      time: 0, lastCrimeAt: -1000,
-      player: null, driving: null,
-      cars: [], peds: [], cops: [], policeCars: [],
-      camYaw: Math.PI, camPitch: 0.32,
-      ammo: 12, ammoReserve: 48, reloadTimer: 0,
-      missionIndex: 0, missionStep: 0, missionActive: false,
-      missionTimer: 0, missionTarget: null, missionsDone: [],
-      shotMode: null
-    };
-  }
-
-  function updateCamera(dt) {
-    var target = game.driving ? game.driving.pos : game.player.pos;
-    // While driving with no recent mouse input, ease the camera behind the car.
-    if (game.driving && performance.now() - lastMouseMoveAt > 1500) {
-      var want = game.driving.heading + Math.PI;
-      var diff = want - game.camYaw;
-      while (diff > Math.PI) diff -= Math.PI * 2;
-      while (diff < -Math.PI) diff += Math.PI * 2;
-      game.camYaw += diff * Math.min(1, dt * 1.2);
+  // Input: keyboard, mouse drag to look, click to shoot.
+  window.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') e.preventDefault();
+    if (e.repeat) return;
+    G.keys[e.code] = true;
+    if (G.state !== 'playing') return;
+    if (e.code === 'KeyE') onInteractKey(G);
+    if (e.code === 'KeyF') playerPunch(G);
+    if (e.code === 'KeyR') startReload(G);
+    if (e.code === 'KeyM') toggleMute(G);
+  });
+  window.addEventListener('keyup', (e) => { G.keys[e.code] = false; });
+  let dragging = false, lastX = 0, lastY = 0, downX = 0, downY = 0, downAt = 0;
+  const canvas = renderer.domElement;
+  canvas.addEventListener('mousedown', (e) => {
+    dragging = true; lastX = e.clientX; lastY = e.clientY;
+    downX = e.clientX; downY = e.clientY; downAt = performance.now();
+  });
+  window.addEventListener('mousemove', (e) => {
+    if (!dragging) return;
+    G.cameraYaw -= (e.clientX - lastX) * 0.005;
+    G.cameraPitch = Math.max(0.06, Math.min(1.15, G.cameraPitch + (e.clientY - lastY) * 0.004));
+    lastX = e.clientX; lastY = e.clientY;
+  });
+  window.addEventListener('mouseup', (e) => {
+    if (!dragging) return;
+    dragging = false;
+    // A short click that barely moved is a shot, not a look.
+    if (G.state === 'playing' && Math.hypot(e.clientX - downX, e.clientY - downY) < 6 && performance.now() - downAt < 350) {
+      shootPistol(G);
     }
-    // Arrow keys steer the camera when pointer lock is off.
-    if (game.keys['ArrowLeft']) game.camYaw += 2.2 * dt;
-    if (game.keys['ArrowRight']) game.camYaw -= 2.2 * dt;
-    if (game.keys['ArrowUp']) game.camPitch = Math.max(0.05, game.camPitch - 1.4 * dt);
-    if (game.keys['ArrowDown']) game.camPitch = Math.min(1.2, game.camPitch + 1.4 * dt);
-    var dist = game.driving ? 12 : 8;
-    var cp = Math.cos(game.camPitch), sp = Math.sin(game.camPitch);
-    var cx = target.x + Math.sin(game.camYaw) * cp * dist;
-    var cy = 2 + sp * dist;
-    var cz = target.z + Math.cos(game.camYaw) * cp * dist;
-    game.camera.position.set(cx, cy, cz);
-    game.camera.lookAt(target.x, target.y + 2, target.z);
+  });
+  window.addEventListener('resize', () => {
+    G.camera.aspect = window.innerWidth / window.innerHeight;
+    G.camera.updateProjectionMatrix();
+    G.renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // A staged screenshot (?shot=...) starts itself: no menu, scene set up.
+  if (G.shot) {
+    startGame(G, false, true);
+    stageShot(G, G.shot);
   }
 
-  function bindInput() {
-    window.addEventListener('keydown', function (e) {
-      if (e.code === 'Space' || e.code.indexOf('Arrow') === 0) e.preventDefault();
-      if (e.repeat) return;
-      game.keys[e.code] = true;
-      if (game.state !== 'playing') return;
-      if (e.code === 'KeyE') {
-        if (game.driving) {
-          SOL.Vehicles.exitCar(game);
-        } else {
-          var car = SOL.Vehicles.nearestCar(game, game.player.pos.x, game.player.pos.z, 4);
-          if (car) SOL.Vehicles.enterCar(game, car);
-        }
-      }
-      if (e.code === 'KeyF') SOL.Player.punch(game);
-      if (e.code === 'KeyR') SOL.Combat.reload(game);
-      if (e.code === 'KeyP') togglePause();
-    });
-    window.addEventListener('keyup', function (e) { game.keys[e.code] = false; });
-    document.addEventListener('mousemove', function (e) {
-      if (document.pointerLockElement !== renderer.domElement) return;
-      game.camYaw -= e.movementX * 0.0025;
-      game.camPitch = Math.max(0.05, Math.min(1.2, game.camPitch + e.movementY * 0.0025));
-      lastMouseMoveAt = performance.now();
-    });
-    document.addEventListener('mousedown', function (e) {
-      if (game.state !== 'playing' || e.button !== 0) return;
-      if (document.pointerLockElement !== renderer.domElement) {
-        try { renderer.domElement.requestPointerLock(); } catch (err) { /* headless: arrows steer */ }
-        return;
-      }
-      SOL.Combat.shoot(game);
-    });
-    window.addEventListener('resize', function () {
-      game.camera.aspect = window.innerWidth / window.innerHeight;
-      game.camera.updateProjectionMatrix();
-      renderer.setSize(window.innerWidth, window.innerHeight);
-    });
+  // The game loop, on real delta time.
+  const clock = new THREE.Clock();
+  function loop() {
+    requestAnimationFrame(loop);
+    const dt = Math.min(clock.getDelta(), 0.05);
+    tick(G, dt);
+    G.renderer.render(G.scene, G.camera);
   }
+  loop();
 
-  function togglePause() {
-    if (game.state === 'playing') {
-      game.state = 'paused';
-      document.getElementById('paused').classList.remove('hidden');
-      if (document.pointerLockElement) document.exitPointerLock();
-    } else if (game.state === 'paused') {
-      game.state = 'playing';
-      document.getElementById('paused').classList.add('hidden');
+  // For play-testing and screenshots: the whole state, inspectable.
+  window.Solmar = G;
+}
+
+function startGame(G, useSave, staged) {
+  initAudio(G);
+  if (useSave) applySave(G, loadSave());
+  document.getElementById('menu').classList.add('hidden');
+  showHud(G);
+  G.state = 'playing';
+  G.lastCrimeAt = G.time;
+  updateHealthHud(G);
+  updateMoneyHud(G);
+  updateWantedHud(G);
+  updateAmmoHud(G);
+  if (!staged) {
+    startMission(G, G.missions.index);
+    showBanner(G, 'WELCOME TO SOLMAR', 'Mara has work for you. Check the job in the top left.');
+  }
+}
+
+// E: steal or exit a car, or work a mission marker.
+function onInteractKey(G) {
+  if (G.player.car) { exitCar(G); updateAmmoHud(G); return; }
+  if (onMissionInteract(G)) return;
+  const car = nearestCar(G, 5);
+  if (car) { enterCar(G, car); updateAmmoHud(G); }
+}
+
+// The contextual "Press E" prompt, refreshed every frame.
+function updatePrompt(G) {
+  if (G.player.car) { showPrompt(G, 'E — get out   ·   Space — handbrake'); return; }
+  const m = G.missions;
+  if (m.active && m.target) {
+    const d = Math.hypot(G.player.pos.x - m.target.x, G.player.pos.z - m.target.z);
+    if (d < m.target.radius && (m.defs[m.index].id === 'the-package' || m.defs[m.index].id === 'the-final-heist')) {
+      showPrompt(G, 'Press E'); return;
     }
   }
+  const car = nearestCar(G, 5);
+  if (car) { showPrompt(G, 'Press E to steal the ' + car.type); return; }
+  showPrompt(G, '');
+}
 
-  function startPlaying() {
-    document.getElementById('menu').classList.add('hidden');
-    document.getElementById('busted').classList.add('hidden');
-    document.getElementById('wasted').classList.add('hidden');
-    SOL.HUD.show();
-    game.state = 'playing';
-    SOL.Audio.unlock();
-    try { renderer.domElement.requestPointerLock(); } catch (err) { /* headless */ }
-    if (game.missionIndex < SOL.Missions.defs.length && !game.missionActive) {
-      SOL.Missions.start(game);
+// Stage a scene for a screenshot: ?shot=street|drive|chase|mission.
+function stageShot(G, shot) {
+  G.state = 'playing';
+  startMission(G, 0);
+  const p = G.player;
+  if (shot === 'street') {
+    p.pos.set(10, 0, 26);
+    p.yaw = Math.PI * 0.82;
+    G.cameraYaw = p.yaw;
+    G.cameraPitch = 0.3;
+  } else if (shot === 'drive') {
+    const sports = G.cars.find((c) => c.type === 'sports' && c.parked) || G.cars[0];
+    sports.mesh.position.set(-26, 0, 60);
+    sports.yaw = Math.PI;
+    sports.mesh.rotation.y = Math.PI;
+    sports.speed = 16;
+    p.car = sports;
+    sports.parked = false;
+    p.mesh.visible = false;
+    p.pos.set(-26, 0, 60);
+    G.cameraYaw = Math.PI;
+    setObjective(G, 'Cruise the coast road — Solmar is yours.');
+  } else if (shot === 'chase') {
+    const sedan = G.cars.find((c) => c.type === 'sedan' && c.parked) || G.cars[0];
+    sedan.mesh.position.set(-78, 0, 26);
+    sedan.yaw = Math.PI / 2;
+    sedan.mesh.rotation.y = Math.PI / 2;
+    sedan.speed = 20;
+    p.car = sedan;
+    sedan.parked = false;
+    p.mesh.visible = false;
+    p.pos.set(-78, 0, 26);
+    G.cameraYaw = Math.PI / 2;
+    G.wanted = 3;
+    G.lastCrimeAt = G.time;
+    updateWantedHud(G);
+    // Two pursuit cars right behind, on the same road.
+    for (let i = 0; i < 2; i++) {
+      spawnPoliceCar(G);
+      const pc = G.policeCars[G.policeCars.length - 1];
+      pc.mesh.position.set(-78 - (14 + i * 12), 0, 26 + (i === 0 ? -3 : 3));
+      pc.yaw = Math.PI / 2;
+      pc.mesh.rotation.y = Math.PI / 2;
+      pc.speed = 22;
     }
+    setObjective(G, 'Lose the heat — three stars and closing in!');
+    setMissionName(G, '3. LOSE THE HEAT');
+  } else if (shot === 'mission') {
+    // Rio on the coast road, facing east: the car to steal ahead of him and
+    // the pier beacon straight ahead, so the mission reads in one frame.
+    const sedan = G.cars.find((c) => c.type === 'sedan' && c.parked);
+    if (sedan) {
+      sedan.mesh.position.set(66, 0, 30);
+      sedan.yaw = Math.PI / 2;
+      sedan.mesh.rotation.y = Math.PI / 2;
+    }
+    p.pos.set(54, 0, 30);
+    p.yaw = Math.PI / 2;
+    G.cameraYaw = Math.PI / 2;
+    G.cameraPitch = 0.3;
+    setObjective(G, 'Steal a car and drive it to the pier');
   }
+  updateAmmoHud(G);
+}
 
-  function respawn(game) {
-    game.player.pos.set(14, 0, -30);
-    game.player.vel.set(0, 0, 0);
-    game.player.health = 100;
-    game.health = 100;
-    game.wanted = 0;
-    SOL.Audio.setSiren(0);
-    if (game.driving) SOL.Vehicles.exitCar(game);
-    game.player.mesh.visible = true;
-    // Clear police presence
-    for (var i = 0; i < game.cops.length; i++) game.scene.remove(game.cops[i].mesh);
-    game.cops = [];
-    for (var j = 0; j < game.policeCars.length; j++) {
-      var idx = game.cars.indexOf(game.policeCars[j]);
-      if (idx >= 0) game.cars.splice(idx, 1);
-      game.scene.remove(game.policeCars[j].mesh);
-    }
-    game.policeCars = [];
-    game.camYaw = Math.PI;
-    game.camPitch = 0.32;
+function updateCamera(G, dt) {
+  const cam = G.camera;
+  if (G.state === 'menu') {
+    // Slow orbit over the plaza behind the start screen.
+    const a = G.time * 0.05;
+    const target = new THREE.Vector3(0, 12, 0);
+    const desired = new THREE.Vector3(Math.sin(a) * 130, 55, Math.cos(a) * 130);
+    G.cameraPos.lerp(desired, Math.min(1, dt * 1.2));
+    cam.position.copy(G.cameraPos);
+    cam.lookAt(target);
+    return;
   }
-
-  SOL.Main = {
-    busted: function (g) {
-      g.state = 'busted';
-      SOL.Audio.busted();
-      g.money = Math.max(0, g.money - 200);
-      SOL.HUD.toast(g, 'Busted! Mara paid $200 bail.');
-      SOL.Save.store(g);
-      if (g.missionActive) SOL.Missions.fail(g, 'Busted by the police');
-      document.getElementById('busted').classList.remove('hidden');
-      if (document.pointerLockElement) document.exitPointerLock();
-    },
-    wasted: function (g) {
-      g.state = 'wasted';
-      g.money = Math.max(0, g.money - 100);
-      SOL.Save.store(g);
-      if (g.missionActive) SOL.Missions.fail(g, 'Wasted on the street');
-      document.getElementById('wasted').classList.remove('hidden');
-      if (document.pointerLockElement) document.exitPointerLock();
-    },
-    init: function () {
-      game = newGameState();
-      window.SOL.game = game;
-      var scene = new THREE.Scene();
-      scene.background = new THREE.Color(0xffa06a);
-      scene.fog = new THREE.Fog(0xffb37a, 130, 460);
-      game.scene = scene;
-      var camera = new THREE.PerspectiveCamera(62, window.innerWidth / window.innerHeight, 0.1, 1200);
-      game.camera = camera;
-      buildRenderer();
-      buildLights(scene);
-      SOL.City.init(game);
-      game.player = SOL.Player.create(game, 14, -30);
-      SOL.Vehicles.init(game);
-      SOL.Pedestrians.init(game);
-      SOL.Police.init(game);
-      SOL.Combat.init(game);
-      SOL.Missions.init(game);
-      SOL.HUD.init(game);
-      bindInput();
-      // Menu buttons
-      var save = SOL.Save.load();
-      if (save) {
-        document.getElementById('continue-btn').classList.remove('hidden');
-        document.getElementById('continue-money').textContent = Math.round(save.money).toLocaleString('en-US');
-        document.getElementById('continue-missions').textContent = save.missionsDone.length;
-        document.getElementById('continue-btn').addEventListener('click', function () {
-          game.money = save.money;
-          game.missionsDone = save.missionsDone.slice();
-          game.missionIndex = save.missionsDone.length;
-          game.health = save.health || 100;
-          game.player.health = game.health;
-          if (save.pos) game.player.pos.set(save.pos[0], 0, save.pos[1]);
-          startPlaying();
-        });
-      }
-      document.getElementById('start-btn').addEventListener('click', function () {
-        SOL.Save.clear();
-        startPlaying();
-      });
-      document.getElementById('busted-btn').addEventListener('click', function () {
-        respawn(game);
-        startPlaying();
-      });
-      document.getElementById('wasted-btn').addEventListener('click', function () {
-        respawn(game);
-        startPlaying();
-      });
-      // Screenshot staging: ?shot=street|drive|chase|mission
-      var params = new URLSearchParams(window.location.search);
-      var shot = params.get('shot');
-      if (shot) {
-        game.shotMode = shot;
-        this.stageShot(shot);
-      }
-      this.loop(0);
-    },
-    stageShot: function (shot) {
-      document.getElementById('menu').classList.add('hidden');
-      SOL.HUD.show();
-      game.state = 'playing';
-      game.money = 1250;
-      if (shot === 'street') {
-        game.player.pos.set(8, 0, -52);
-        game.player.yaw = Math.PI / 2;
-        game.camYaw = -Math.PI / 2;
-        game.camPitch = 0.28;
-        SOL.Missions.start(game);
-      } else if (shot === 'drive') {
-        var car = SOL.Vehicles.nearestCar(game, 0, 0, 500);
-        // Prefer a sports car for the shot
-        for (var i = 0; i < game.cars.length; i++) {
-          if (game.cars[i].type === 'sports') { car = game.cars[i]; break; }
-        }
-        car.pos.set(-150, 0, 3);
-        car.heading = Math.PI / 2;
-        car.mesh.rotation.y = car.heading;
-        SOL.Vehicles.enterCar(game, car);
-        car.speed = 18;
-        game.camYaw = Math.PI / 2 + Math.PI;
-        game.camPitch = 0.3;
-        SOL.Missions.start(game);
-      } else if (shot === 'chase') {
-        var sedan = null;
-        for (var j = 0; j < game.cars.length; j++) {
-          if (game.cars[j].type === 'sedan' && !game.cars[j].isTraffic) { sedan = game.cars[j]; break; }
-        }
-        // Stage the chase on a proper road, not the plaza grass.
-        sedan.pos.set(-100, 0, -3);
-        sedan.heading = Math.PI / 2;
-        sedan.mesh.rotation.y = Math.PI / 2;
-        SOL.Vehicles.enterCar(game, sedan);
-        sedan.speed = 20;
-        game.camYaw = Math.PI / 2 + Math.PI;
-        game.camPitch = 0.3;
-        game.missionIndex = 2;
-        SOL.Police.addWanted(game, 3);
-        SOL.Missions.start(game);
-      } else if (shot === 'mission') {
-        game.player.pos.set(238, 0, 0);
-        game.player.yaw = Math.PI / 2;
-        game.camYaw = -Math.PI / 2;
-        game.camPitch = 0.3;
-        game.missionIndex = 1;
-        SOL.Missions.start(game);
-      }
-    },
-    loop: function () {
-      requestAnimationFrame(SOL.Main.loop);
-      // Real elapsed time, clamped: the game runs at true speed on any frame rate.
-      var dt = Math.min(clock.getDelta(), 0.05);
-      if (game.state === 'playing') {
-        game.time += dt;
-        SOL.Player.update(game, dt);
-        SOL.Vehicles.updateTraffic(game, dt);
-        SOL.Vehicles.updateDriving(game, dt);
-        SOL.Vehicles.updatePoliceLights(game, dt);
-        SOL.Pedestrians.update(game, dt);
-        SOL.Police.update(game, dt);
-        SOL.Combat.update(game, dt);
-        SOL.Missions.update(game, dt);
-        updateCamera(dt);
-        SOL.HUD.update(game);
-        if (game.time - lastSaveAt > 15) {
-          lastSaveAt = game.time;
-          SOL.Save.store(game);
-        }
-      }
-      frameCount++;
-      renderer.render(game.scene, game.camera);
-      // Screenshot mode: signal readiness once the scene has settled.
-      if (game.shotMode && !window.__solmarReady && game.time > 1.5 && frameCount > 8) {
-        window.__solmarReady = true;
-      }
-    }
-  };
-
-  // Boot once the page (and three.js) has loaded.
-  if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', function () { SOL.Main.init(); });
+  const car = G.player.car;
+  let target, dist, height, yaw;
+  if (car) {
+    target = new THREE.Vector3(car.mesh.position.x, 2, car.mesh.position.z);
+    dist = 10.5; height = 4.2; yaw = car.yaw;
   } else {
-    SOL.Main.init();
+    target = new THREE.Vector3(G.player.pos.x, G.player.pos.y + 2, G.player.pos.z);
+    dist = 7.5; height = 2.2; yaw = G.cameraYaw;
   }
-})();
+  const pitch = car ? 0.3 : G.cameraPitch;
+  const desired = new THREE.Vector3(
+    target.x - Math.sin(yaw) * Math.cos(pitch) * dist,
+    target.y + Math.sin(pitch) * dist + (car ? height - 2 : height - 2),
+    target.z - Math.cos(yaw) * Math.cos(pitch) * dist
+  );
+  desired.y = Math.max(desired.y, target.y + 1.2);
+  const k = car ? 1 - Math.exp(-6 * dt) : 1 - Math.exp(-14 * dt);
+  G.cameraPos.lerp(desired, Math.min(1, k));
+  cam.position.copy(G.cameraPos);
+  cam.lookAt(target);
+}
+
+function tick(G, dt) {
+  G.time += dt;
+  if (G.state !== 'playing') {
+    updateCamera(G, dt);
+    return;
+  }
+  G.player.invulnTimer = Math.max(0, G.player.invulnTimer - dt);
+  if (G.player.car) updateDriving(G, dt);
+  else updatePlayer(G, dt);
+  updateTraffic(G, dt);
+  updatePedestrians(G, dt);
+  updateWanted(G, dt);
+  updatePolice(G, dt);
+  updateMissions(G, dt);
+  updateCombat(G, dt);
+  updateSirenSound(G);
+  updatePrompt(G);
+  updateSpeedHud(G);
+  drawMinimap(G);
+  // Autosave every ten seconds.
+  G.saveTimer += dt;
+  if (G.saveTimer > 10) { G.saveTimer = 0; saveGame(G); }
+  updateCamera(G, dt);
+}
+
+init();
